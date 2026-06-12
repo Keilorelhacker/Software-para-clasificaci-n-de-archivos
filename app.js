@@ -58,8 +58,8 @@ const App = (() => {
       <div class="login-wrap">
         <div class="card login-card">
           <div class="seal">SA</div>
-          <h2 class="title" style="text-align:center;margin:0">SACD‑Local</h2>
-          <p class="sub" style="text-align:center">Sistema de Apoyo a la Clasificación Documental · versión local sin nube</p>
+          <h2 class="title" style="text-align:center;margin:0">¡Bienvenido/a a SACD‑Local!</h2>
+          <p class="sub" style="text-align:center">Sistema de Apoyo a la Clasificación Documental. Seleccione su usuario para comenzar.</p>
           <label class="fld">Persona usuaria
             <select id="lg-user">${usuarios.map(u=>`<option value="${u.id}">${esc(u.nombre)} — ${u.rol}</option>`).join("")}</select>
           </label>
@@ -67,8 +67,6 @@ const App = (() => {
             <label class="fld">PIN (4 dígitos)<input id="lg-pin" type="password" inputmode="numeric" maxlength="4" placeholder="••••"></label>
           </div>
           <button class="btn block accent" id="lg-enter">Ingresar</button>
-          <hr class="sep">
-          <small class="muted">Control de acceso local en el dispositivo. La autenticación en servidor y MFA pertenecen al despliegue institucional (ver README).</small>
         </div>
       </div>`;
     const sel = $("#lg-user");
@@ -146,23 +144,29 @@ const App = (() => {
         <button class="btn block accent" id="c-crear">Crear campaña</button>
       </div>
       <h3 style="font-family:var(--serif)">Campañas existentes</h3>
-      ${camps.length? camps.map(c=>`
-        <div class="list-item">
-          <div class="dot">📁</div>
-          <div class="grow"><div class="t">${esc(c.nombre)} ${S.campana&&S.campana.id===c.id?'<span class="badge teal">activa</span>':''}</div>
-            <div class="m"><span class="code">${esc(c.codigo)}</span> · ${esc(c.deptoReceptor||"—")} · ${c.contador||0} doc.</div></div>
-          <button class="btn sm ${S.campana&&S.campana.id===c.id?'ghost':'accent'}" data-sel="${c.id}">${S.campana&&S.campana.id===c.id?'Activa':'Activar'}</button>
-        </div>`).join("") : `<p class="sub">Aún no hay campañas. Cree la primera arriba.</p>`}
+      ${camps.length? camps.map(c=>{ const esActiva = S.campana&&S.campana.id===c.id; return `
+        <div class="list-item" style="${esActiva?'border:2px solid var(--teal);background:var(--teal-l);':''}">
+          <div class="dot" style="${esActiva?'background:var(--teal);color:#fff;':''}">📁</div>
+          <div class="grow">
+            <div class="t">${esc(c.nombre)} ${esActiva?'<span class="badge teal">● Activa</span>':'<span class="badge gray">○ Inactiva</span>'}</div>
+            <div class="m"><span class="code">${esc(c.codigo)}</span> · ${esc(c.deptoReceptor||"—")} · ${c.contador||0} doc. · Cap. caja: ${c.capacidadCaja}</div>
+          </div>
+          <button class="btn sm ${esActiva?'ghost':'accent'}" data-sel="${c.id}" ${esActiva?'disabled':''}>
+            ${esActiva?'✓ Activa':'Activar'}
+          </button>
+        </div>`; }).join("") : `<p class="sub">Aún no hay campañas. Cree la primera arriba.</p>`}
     `);
     $("#c-crear").addEventListener("click", async ()=>{
       const nombre=$("#c-nombre").value.trim(), codigo=$("#c-cod").value.trim().toUpperCase().replace(/[^A-Z0-9]/g,"");
       if(!nombre||!codigo) return toast("Nombre y código son obligatorios","err");
+      const btn = $("#c-crear");
+      btn.disabled = true; btn.textContent = "Guardando…";
       const camp={ id:uid("camp"), nombre, codigo, ubicacion:$("#c-ubi").value.trim(),
         deptoReceptor:$("#c-dep").value.trim(), capacidadCaja:parseInt($("#c-cap").value)||S.ajustes.capacidadCaja,
         contador:0, creada:nowISO(), creadaPor:S.usuario.nombre };
       await DB.put("campanas",camp);
       await DB.registrarEvento({usuario:S.usuario.nombre,rol:S.usuario.rol,accion:"crear_campana",entidad:"campana",entidadId:camp.id,detalle:{nombre,codigo}});
-      S.campana=camp; toast("Campaña creada y activada","ok"); viewHome();
+      S.campana=camp; toast("✓ Campaña creada y activada","ok"); viewHome();
     });
     root().querySelectorAll("[data-sel]").forEach(b=>b.addEventListener("click",async()=>{
       S.campana = camps.find(c=>c.id===b.dataset.sel); renderShell(); toast("Campaña activada","ok");
@@ -203,7 +207,7 @@ const App = (() => {
     $("#cap-cam").addEventListener("change",onFile);
     $("#cap-file").addEventListener("change",onFile);
     if($("#cap-next")) $("#cap-next").addEventListener("click",()=>{ S.captura.paso=2; analizarCalidad().then(viewCaptura); });
-    $("#cap-cancel").addEventListener("click",()=>{ S.captura=null; viewCaptura(); });
+    $("#cap-cancel").addEventListener("click",()=>{ S.captura=null; S.vista="home"; route(); });
   }
 
   // Control de calidad de imagen: brillo medio y nitidez (proxy de Laplaciano)
@@ -254,8 +258,11 @@ const App = (() => {
     $("#qc-retake").addEventListener("click",()=>{ S.captura={paso:1}; viewCaptura(); });
   }
 
-  // Preprocesa (gris + estiramiento de contraste) y genera thumbnail comprimido
-  function preprocesar(dataUrl, maxW=1400){
+  // Preprocesa: genera DOS versiones para el OCR —
+  //  (a) gris + estiramiento de contraste, (b) binarizada con umbral de Otsu —
+  // y un thumbnail comprimido. La binarización suele mejorar mucho el OCR en
+  // documentos impresos; la versión gris es respaldo para fotos con sombras.
+  function preprocesar(dataUrl, maxW=1600){
     return new Promise(res=>{
       const im=new Image();
       im.onload=()=>{
@@ -263,18 +270,44 @@ const App = (() => {
         const c=document.createElement("canvas"); c.width=W;c.height=H;
         const ctx=c.getContext("2d"); ctx.drawImage(im,0,0,W,H);
         const img=ctx.getImageData(0,0,W,H), d=img.data;
+
+        // 1) Gris + estiramiento de contraste
         let min=255,max=0;
-        for(let i=0;i<d.length;i+=4){ const g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; if(g<min)min=g; if(g>max)max=g; }
+        const gray=new Uint8ClampedArray(W*H);
+        for(let i=0,j=0;i<d.length;i+=4,j++){ const g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]; gray[j]=g; if(g<min)min=g; if(g>max)max=g; }
         const rng=Math.max(1,max-min);
-        for(let i=0;i<d.length;i+=4){ const g=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
-          const v=Math.max(0,Math.min(255,((g-min)/rng)*255)); d[i]=d[i+1]=d[i+2]=v; }
+        for(let j=0;j<gray.length;j++) gray[j]=Math.max(0,Math.min(255,((gray[j]-min)/rng)*255));
+        for(let i=0,j=0;i<d.length;i+=4,j++){ d[i]=d[i+1]=d[i+2]=gray[j]; }
         ctx.putImageData(img,0,0);
-        const proc=c.toDataURL("image/jpeg",0.8);
-        // thumbnail para almacenamiento eficiente
+        const procGris=c.toDataURL("image/jpeg",0.85);
+
+        // 2) Binarización con umbral de Otsu (separa tinta/papel automáticamente)
+        const hist=new Array(256).fill(0);
+        for(let j=0;j<gray.length;j++) hist[gray[j]|0]++;
+        const total=gray.length;
+        let sumAll=0; for(let t=0;t<256;t++) sumAll+=t*hist[t];
+        let sumB=0,wB=0,bestVar=-1,umbral=127;
+        for(let t=0;t<256;t++){
+          wB+=hist[t]; if(!wB) continue;
+          const wF=total-wB; if(!wF) break;
+          sumB+=t*hist[t];
+          const mB=sumB/wB, mF=(sumAll-sumB)/wF;
+          const between=wB*wF*(mB-mF)*(mB-mF);
+          if(between>bestVar){ bestVar=between; umbral=t; }
+        }
+        const img2=ctx.getImageData(0,0,W,H), d2=img2.data;
+        for(let i=0,j=0;i<d2.length;i+=4,j++){ const v=gray[j]>umbral?255:0; d2[i]=d2[i+1]=d2[i+2]=v; }
+        ctx.putImageData(img2,0,0);
+        const procBin=c.toDataURL("image/jpeg",0.9);
+
+        // 3) Thumbnail para almacenamiento eficiente (desde la versión gris)
+        const c3=document.createElement("canvas");
         const tw=Math.min(900,W), th=Math.round(H*(tw/W));
-        const tc=document.createElement("canvas"); tc.width=tw;tc.height=th;
-        tc.getContext("2d").drawImage(c,0,0,tw,th);
-        res({ proc, thumb: tc.toDataURL("image/jpeg",0.6) });
+        c3.width=tw;c3.height=th;
+        const im3=new Image();
+        im3.onload=()=>{ c3.getContext("2d").drawImage(im3,0,0,tw,th);
+          res({ procGris, procBin, thumb: c3.toDataURL("image/jpeg",0.6) }); };
+        im3.src=procGris;
       };
       im.src=dataUrl;
     });
@@ -290,31 +323,87 @@ const App = (() => {
       </div>`);
   }
 
+  // Carga toda la memoria de aprendizaje como mapa { serieId: registro }
+  async function cargarAprendizaje(){
+    const regs = await DB.all("aprendizaje");
+    const map = {};
+    for(const r of regs) map[r.serieId] = r;
+    return map;
+  }
+
   async function ejecutarOCR() {
     const setStatus=(t,p)=>{ const s=$("#ocr-status"),b=$("#ocr-bar"); if(s)s.textContent=t; if(b&&p!=null)b.style.width=Math.round(p*100)+"%"; };
-    const { proc, thumb } = await preprocesar(S.captura.img);
+    const { procGris, procBin, thumb } = await preprocesar(S.captura.img);
     S.captura.thumb = thumb;
-    let texto="";
+    let texto="", ocrConf=0;
     try {
       if (typeof Tesseract === "undefined") throw new Error("sin-ocr");
+      // Pasada 1: imagen binarizada (Otsu) — suele dar la mejor lectura en documentos
       setStatus("Reconociendo texto (OCR en español)…",0.15);
-      const { data } = await Tesseract.recognize(proc, "spa", {
-        logger:m=>{ if(m.status==="recognizing text") setStatus("Reconociendo texto…",0.2+0.75*m.progress); }
+      const r1 = await Tesseract.recognize(procBin, "spa", {
+        logger:m=>{ if(m.status==="recognizing text") setStatus("Reconociendo texto…",0.15+0.5*m.progress); }
       });
-      texto = (data && data.text) || "";
+      texto = (r1.data && r1.data.text) || "";
+      ocrConf = (r1.data && r1.data.confidence) || 0;
+      // Pasada 2 (solo si la lectura fue pobre): reintenta con la versión en gris,
+      // útil cuando hay sombras o iluminación irregular que arruinan la binarización
+      if (ocrConf < 55) {
+        setStatus("Lectura difícil: reintentando con ajuste alternativo…",0.7);
+        const r2 = await Tesseract.recognize(procGris, "spa", {
+          logger:m=>{ if(m.status==="recognizing text") setStatus("Segunda lectura…",0.7+0.25*m.progress); }
+        });
+        const conf2 = (r2.data && r2.data.confidence) || 0;
+        if (conf2 > ocrConf) { texto = (r2.data && r2.data.text) || texto; ocrConf = conf2; }
+      }
     } catch(e) {
       // Fallback: sin OCR disponible → entrada manual de texto
       S.captura.texto=""; S.captura.sinOCR=true; S.captura.paso=4; return viewCaptura();
     }
     S.captura.texto = texto;
+    S.captura.ocrConfianza = Math.round(ocrConf);
+    setStatus("Clasificando…",0.95);
     const meta = Clasificador.extraerMetadatos(texto);
-    const clas = Clasificador.clasificar(texto, meta);
+    const aprendizaje = await cargarAprendizaje();
+    const clas = Clasificador.clasificar(texto, meta, aprendizaje);
     S.captura.meta = meta; S.captura.clas = clas;
     S.captura.paso=4; viewCaptura();
   }
 
   function selectSeries(selId){
     return `<select id="${selId}">${SERIES.map(s=>`<option value="${s.id}">${esc(s.id)} · ${esc(s.nombre)}</option>`).join("")}</select>`;
+  }
+
+  // Panel de metadatos detectados (caracterización ampliada del documento)
+  function renderMetadatos(meta){
+    meta = meta || {};
+    const items = [
+      meta.tipoDocumental && ["Tipo", meta.tipoDocumental],
+      meta.fecha && ["Fecha", meta.fecha],
+      meta.anio && ["Año", meta.anio],
+      meta.n_oficio && ["Oficio", meta.n_oficio],
+      meta.n_expediente && ["Expediente", meta.n_expediente],
+      meta.n_acta && ["Acta", meta.n_acta],
+      meta.n_resolucion && ["Resolución", meta.n_resolucion],
+      meta.n_circular && ["Circular", meta.n_circular],
+      meta.n_factura && ["Factura", meta.n_factura],
+      meta.monto && ["Monto", meta.monto],
+      meta.cedula && ["Cédula", meta.cedula],
+      meta.correo && ["Correo", meta.correo],
+      meta.telefono && ["Teléfono", meta.telefono],
+      meta.destinatario && ["Para", meta.destinatario],
+      meta.remitente && ["De", meta.remitente],
+    ].filter(Boolean);
+    const senales = [
+      meta.tiene_firma && "firma",
+      meta.tiene_sello && "sello",
+      meta.tiene_membrete && "membrete institucional",
+      meta.tieneTabla && "estructura tabular/contable",
+      meta.tieneListado && "listado",
+    ].filter(Boolean);
+    if(!items.length && !senales.length) return "";
+    return `<div class="kv" style="margin-top:6px"><b>Caracterización del documento:</b></div>
+      ${items.map(([k,v])=>`<div class="qc-line"><span>${esc(k)}</span><b style="font-size:.8rem;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v)}</b></div>`).join("")}
+      ${senales.length?`<div class="kv" style="margin-top:6px"><small class="muted">Señales: ${senales.map(esc).join(" · ")}</small></div>`:""}`;
   }
 
   function pasoValidar() {
@@ -334,16 +423,17 @@ const App = (() => {
         <div class="t" style="font-size:1.05rem;font-weight:700;margin:6px 0">${esc(clas.sugerida.id)} · ${esc(clas.sugerida.nombre)}</div>
         <div class="row between" style="align-items:flex-end;margin:6px 0 4px"><span class="sub" style="margin:0">Confianza</span><span class="conf-num" style="color:${color}">${conf}%</span></div>
         <div class="meter"><i style="width:${conf}%;background:${color}"></i></div>
-        ${baja?`<div class="warn" style="margin-top:10px">Confianza por debajo del umbral (${Math.round(S.ajustes.umbral*100)}%). Verifique y corrija antes de confirmar.</div>`:""}
-        ${clas.evidencia.length?`<div class="evidence" style="margin-top:10px"><small class="muted">Evidencia:</small><br>${clas.evidencia.map(e=>`<span>${esc(e)}</span>`).join("")}</div>`:""}
+        ${baja?`<div class="warn" style="margin-top:10px">Confianza por debajo del umbral (${Math.round(S.ajustes.umbral*100)}%). Verifique y corrija antes de confirmar. <b>Su decisión alimentará la memoria del clasificador.</b></div>`:""}
+        ${clas.evidencia.length?`<div class="evidence" style="margin-top:10px"><small class="muted">Evidencia (★ = término aprendido de validaciones previas):</small><br>${clas.evidencia.map(e=>`<span>${esc(e)}</span>`).join("")}</div>`:""}
         <div class="kv" style="margin-top:10px"><b>Retención:</b> ${esc(clas.sugerida.plazo)} · <b>Valor C-C:</b> ${esc(clas.sugerida.valorCC)}</div>
-      </div>`:`<div class="warn">No se obtuvo una sugerencia automática. Seleccione la serie manualmente.</div>`}
+        ${c.ocrConfianza!=null?`<div class="kv"><b>Calidad de lectura OCR:</b> ${c.ocrConfianza}%${c.ocrConfianza<55?' <span class="badge rust">baja</span>':c.ocrConfianza<75?' <span class="badge ochre">media</span>':' <span class="badge teal">buena</span>'}</div>`:""}
+      </div>`:`<div class="warn">No se obtuvo una sugerencia automática. Seleccione la serie manualmente. <b>Su decisión alimentará la memoria del clasificador.</b></div>`}
 
       <div class="card">
         <h3>Decisión</h3>
         <label class="fld">Serie documental final ${selectSeries("val-serie")}</label>
         <label class="fld">Criterio / observación (opcional)<input id="val-crit" placeholder="Motivo de la corrección o nota"></label>
-        ${meta.fecha||meta.n_oficio||meta.n_expediente||meta.n_acta?`<div class="kv"><b>Metadatos detectados:</b> ${[meta.fecha&&'fecha '+meta.fecha,meta.n_oficio&&'oficio '+meta.n_oficio,meta.n_expediente&&'exp. '+meta.n_expediente,meta.n_acta&&'acta '+meta.n_acta].filter(Boolean).map(esc).join(" · ")}</div>`:""}
+        ${renderMetadatos(meta)}
         <div class="row wrap" style="margin-top:10px">
           <button class="btn teal" style="flex:1" id="val-ok">✓ Confirmar clasificación</button>
           <button class="btn rust" style="flex:1" id="val-rej">✕ Rechazar / revisión manual</button>
@@ -352,13 +442,14 @@ const App = (() => {
       <button class="btn block ghost" id="val-cancel">Cancelar documento</button>
     `);
     if(clas&&clas.sugerida) $("#val-serie").value=clas.sugerida.id;
-    if(c.sinOCR&&$("#man-clas")) $("#man-clas").addEventListener("click",()=>{
+    if(c.sinOCR&&$("#man-clas")) $("#man-clas").addEventListener("click",async()=>{
       const txt=$("#man-text").value; const m=Clasificador.extraerMetadatos(txt);
-      S.captura.texto=txt; S.captura.meta=m; S.captura.clas=Clasificador.clasificar(txt,m); S.captura.sinOCR=false; viewCaptura();
+      const apr=await cargarAprendizaje();
+      S.captura.texto=txt; S.captura.meta=m; S.captura.clas=Clasificador.clasificar(txt,m,apr); S.captura.sinOCR=false; viewCaptura();
     });
     $("#val-ok").addEventListener("click",()=>confirmarDocumento($("#val-serie").value,$("#val-crit").value,false));
     $("#val-rej").addEventListener("click",()=>confirmarDocumento($("#val-serie").value,$("#val-crit").value,true));
-    $("#val-cancel").addEventListener("click",()=>{ S.captura=null; viewCaptura(); });
+    $("#val-cancel").addEventListener("click",()=>{ S.captura=null; S.vista="home"; route(); });
   }
 
   async function asignarLote(serieId, rechazado){
@@ -376,6 +467,44 @@ const App = (() => {
     lote.docCount++; await DB.put("lotes",lote); return lote;
   }
 
+  // ★ Retroalimentación: aprende de las validaciones humanas.
+  // Se activa cuando hubo intervención humana significativa:
+  //   - corrección (la sugerencia era otra serie), o
+  //   - confirmación con confianza baja (el sistema "dudó" y el humano decidió).
+  // Extrae los términos distintivos del texto y refuerza su asociación con la
+  // serie elegida; si hubo corrección, penaliza levemente esos términos en la
+  // serie sugerida erróneamente. Los pesos se acotan para evitar sobreajuste.
+  async function aprenderDeValidacion(serieCorrectaId, serieSugeridaId, texto, accion){
+    if(!texto || texto.trim().length < 30) return 0; // texto insuficiente para aprender
+    const tokens = Clasificador.tokensRelevantes(texto, 15);
+    if(!tokens.length) return 0;
+
+    // Refuerzo positivo en la serie validada por el humano
+    let reg = (await DB.get("aprendizaje", serieCorrectaId)) ||
+              { serieId: serieCorrectaId, terminos: {}, muestras: 0 };
+    for(const tk of tokens){
+      reg.terminos[tk] = Math.min((reg.terminos[tk] || 0) + 1, 10); // techo de peso
+    }
+    reg.muestras++; reg.actualizado = nowISO();
+    await DB.put("aprendizaje", reg);
+
+    // Penalización suave en la serie sugerida erróneamente (solo correcciones)
+    if(accion === "corregida" && serieSugeridaId && serieSugeridaId !== serieCorrectaId){
+      let regNeg = await DB.get("aprendizaje", serieSugeridaId);
+      if(regNeg && regNeg.terminos){
+        for(const tk of tokens){
+          if(regNeg.terminos[tk] != null){
+            regNeg.terminos[tk] = Math.max(regNeg.terminos[tk] - 0.5, 0);
+            if(regNeg.terminos[tk] === 0) delete regNeg.terminos[tk];
+          }
+        }
+        regNeg.actualizado = nowISO();
+        await DB.put("aprendizaje", regNeg);
+      }
+    }
+    return tokens.length;
+  }
+
   async function confirmarDocumento(serieId, criterio, rechazado){
     const c=S.captura, clas=c.clas;
     const serie=SERIES.find(s=>s.id===serieId);
@@ -388,16 +517,31 @@ const App = (() => {
     const doc={ id:uid("doc"), codigo, campanaId:S.campana.id, campanaNombre:S.campana.nombre,
       serieId:rechazado?null:serieId, serieNombre:rechazado?"(revisión manual)":(serie?serie.nombre:serieId),
       estado:rechazado?"revision_manual":"clasificado",
-      confianza: clas?clas.confianza:0, sugeridaId: clas&&clas.sugerida?clas.sugerida.id:null,
+      confianza: clas?clas.confianza:0, ocrConfianza: c.ocrConfianza!=null?c.ocrConfianza:null,
+      sugeridaId: clas&&clas.sugerida?clas.sugerida.id:null,
       accionHumana:accion, criterio:criterio||"", meta:c.meta||{}, textoOCR:(c.texto||"").slice(0,4000),
       thumb:c.thumb||null, loteId:lote.id, codigoCaja:lote.codigoCaja,
       capturadoPor:S.usuario.nombre, capturadoEn:nowISO(),
-      confidencial: clas?clas.esConfidencial:false || (serie&&SERIES_CONFIDENCIALES.includes(serie.id)) };
+      confidencial: (clas&&clas.esConfidencial) || (serie&&SERIES_CONFIDENCIALES.includes(serie.id)) || false };
     await DB.put("documentos",doc);
     await DB.registrarEvento({usuario:S.usuario.nombre,rol:S.usuario.rol,accion:"clasificar_documento",
       entidad:"documento",entidadId:doc.id,campana:S.campana.nombre,
       detalle:{codigo,serie:doc.serieNombre,accion,confianza:doc.confianza,caja:lote.codigoCaja,sugerida:doc.sugeridaId}});
     await DB.put("campanas",S.campana);
+
+    // ★ Retroalimentación del clasificador: corrección, o aceptación con duda
+    const huboValidacionSignificativa = !rechazado &&
+      (accion==="corregida" || (clas && clas.confianza < S.ajustes.umbral));
+    if(huboValidacionSignificativa){
+      const nTerm = await aprenderDeValidacion(serieId, doc.sugeridaId, c.texto, accion);
+      if(nTerm){
+        await DB.registrarEvento({usuario:S.usuario.nombre,rol:S.usuario.rol,
+          accion:"aprendizaje_actualizado",entidad:"serie",entidadId:serieId,
+          campana:S.campana.nombre,detalle:{terminos:nTerm,origen:accion,codigo}});
+        toast(`✓ El clasificador aprendió ${nTerm} término(s) de su validación`,"ok");
+      }
+    }
+
     S.captura.doc=doc; S.captura.lote=lote; S.captura.paso=5; viewCaptura();
   }
 
@@ -588,6 +732,9 @@ const App = (() => {
   // ---- ADMINISTRACIÓN --------------------------------------------------------
   async function viewAdmin() {
     const usuarios=await DB.all("usuarios");
+    const aprendizaje=await DB.all("aprendizaje");
+    const totalTerminos=aprendizaje.reduce((a,r)=>a+Object.keys(r.terminos||{}).length,0);
+    const totalMuestras=aprendizaje.reduce((a,r)=>a+(r.muestras||0),0);
     setMain(`
       <button class="btn ghost sm" id="back">← Más</button>
       <h2 class="title">Administración</h2>
@@ -605,6 +752,19 @@ const App = (() => {
         <label class="fld">Rol <select id="u-rol"><option>clasificador</option><option>supervisor</option><option>auditor</option><option>administrador</option></select></label>
         <label class="fld">PIN opcional (4 dígitos)<input id="u-pin" inputmode="numeric" maxlength="4" placeholder="opcional"></label>
         <button class="btn accent sm" id="u-add">Agregar usuario</button>
+      </div>
+      <div class="card"><h3>🧠 Memoria del clasificador</h3>
+        <p class="sub">Términos aprendidos de las validaciones humanas (correcciones y confirmaciones con baja confianza). Esta memoria refuerza las sugerencias futuras sin reemplazar el catálogo oficial.</p>
+        <div class="qc-line"><span>Series con aprendizaje</span><b>${aprendizaje.length}</b></div>
+        <div class="qc-line"><span>Términos aprendidos</span><b>${totalTerminos}</b></div>
+        <div class="qc-line"><span>Validaciones aprovechadas</span><b>${totalMuestras}</b></div>
+        ${aprendizaje.length?`<details style="margin-top:8px"><summary style="cursor:pointer;font-size:.84rem;font-weight:600">Ver detalle por serie</summary>
+          <div style="max-height:200px;overflow:auto;margin-top:6px">
+          ${aprendizaje.map(r=>{ const s=SERIES.find(x=>x.id===r.serieId);
+            const tops=Object.entries(r.terminos||{}).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([t])=>t);
+            return `<div class="qc-line"><span><b>${esc(r.serieId)}</b> ${esc(s?s.nombre:"")}<br><small class="muted">${tops.map(esc).join(", ")||"—"}</small></span><b>${r.muestras||0}</b></div>`; }).join("")}
+          </div></details>`:""}
+        <button class="btn ghost sm rust" id="apr-reset" style="margin-top:10px" ${aprendizaje.length?"":"disabled"}>🗑️ Reiniciar memoria de aprendizaje</button>
       </div>
       <div class="card"><h3>Datos locales</h3>
         <p class="sub">Las miniaturas de imagen se guardan localmente. Puede purgarlas para ahorrar espacio (los registros y la trazabilidad se conservan).</p>
@@ -637,6 +797,13 @@ const App = (() => {
       for(const d of docs){ if(d.thumb){ d.thumb=null; await DB.put("documentos",d); n++; } }
       await DB.registrarEvento({usuario:S.usuario.nombre,rol:S.usuario.rol,accion:"purgar_miniaturas",detalle:{afectados:n}});
       toast(`${n} miniatura(s) purgada(s)`,"ok");
+    });
+    if($("#apr-reset")) $("#apr-reset").addEventListener("click",async()=>{
+      if(!confirm("¿Borrar toda la memoria de aprendizaje del clasificador? El catálogo oficial no se ve afectado.")) return;
+      const regs=await DB.all("aprendizaje");
+      for(const r of regs) await DB.del("aprendizaje",r.serieId);
+      await DB.registrarEvento({usuario:S.usuario.nombre,rol:S.usuario.rol,accion:"reiniciar_aprendizaje",detalle:{series:regs.length}});
+      toast("Memoria de aprendizaje reiniciada","ok"); viewAdmin();
     });
   }
 

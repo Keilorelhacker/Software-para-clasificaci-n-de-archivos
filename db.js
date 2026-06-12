@@ -6,7 +6,7 @@
 
 const DB = (() => {
   const NAME = "sacd_local";
-  const VERSION = 1;
+  const VERSION = 2; // v2: agrega store "aprendizaje" (memoria de validaciones humanas)
   let _db = null;
 
   function open() {
@@ -35,6 +35,10 @@ const DB = (() => {
         }
         if (!db.objectStoreNames.contains("config"))
           db.createObjectStore("config", { keyPath: "k" });
+        // v2 · Memoria de aprendizaje: términos aprendidos de las validaciones humanas,
+        // por serie documental. { serieId, terminos: { token: peso }, muestras, actualizado }
+        if (!db.objectStoreNames.contains("aprendizaje"))
+          db.createObjectStore("aprendizaje", { keyPath: "serieId" });
       };
       req.onsuccess = (e) => { _db = e.target.result; resolve(_db); };
       req.onerror = (e) => reject(e.target.error);

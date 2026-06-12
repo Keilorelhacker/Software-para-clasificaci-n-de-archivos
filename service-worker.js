@@ -2,7 +2,7 @@
  * Cachea el "app shell" y las librerías para funcionar SIN conexión.
  * Estrategia: cache-first para recursos propios; runtime-cache para el OCR (CDN). */
 
-const CACHE = "sacd-local-v1";
+const CACHE = "sacd-local-v2"; // v2: OCR mejorado + memoria de aprendizaje
 const ASSETS = [
   "./",
   "./index.html",
